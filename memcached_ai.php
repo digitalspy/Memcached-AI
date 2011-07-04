@@ -1,4 +1,33 @@
 <?php
+// +----------------------------------------------------------------------+
+// | Copyright (c) 2011 Digital Spy Ltd (http://www.digitalspy.co.uk)     |
+// +----------------------------------------------------------------------+
+// | This library is free software; you can redistribute it and/or        |
+// | modify it under the terms of the GNU Lesser General Public           |
+// | License as published by the Free Software Foundation; either         |
+// | version 2.1 of the License, or (at your option) any later version.   |
+// |                                                                      |
+// | This library is distributed in the hope that it will be useful,      |
+// | but WITHOUT ANY WARRANTY; without even the implied warranty of       |
+// | MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU    |
+// | Lesser General Public License for more details.                      |
+// |                                                                      |
+// | You should have received a copy of the GNU Lesser General Public     |
+// | License along with this library; if not, write to the Free Software  |
+// | Foundation, Inc., 59 Temple Place, Suite 330,Boston,MA 02111-1307 USA|
+// +----------------------------------------------------------------------+
+// | Author: Jason Margolin (Digital Spy)                                 |
+// +----------------------------------------------------------------------+
+//
+
+/**
+ * 
+ * A system to automatically manage and expire memcached MySQL queries
+ *
+ * @name Memcached AI
+ * @author Jason Margolin <engineering.software@digitalspy.co.uk>
+ * @version 0.1
+ */
 
 class MemcachedAI {
 	
@@ -25,7 +54,7 @@ class MemcachedAI {
 	 * @param $db_name the database name to select
 	 * @param $memcachedExpire the memcached expiration time for keys
 	 */
-	public function __construct($db_host = false, $db_username = "", $db_password = "", $db_name = "", $memcachedExpire = 0) {
+	public function __construct($db_host, $db_username, $db_password, $db_name, $memcachedExpire = 0) {
 		
 		// Create new Memcached instance
 		if (class_exists('Memcached')) {
@@ -45,10 +74,8 @@ class MemcachedAI {
 			trigger_error('Could not load an instance of MySQL', E_USER_ERROR);
 		}
 		else {
-			if ($db_host !== false) {
-				$this->conn = mysql_connect($db_host, $db_username, $db_password) or die(mysql_error());
-				mysql_select_db($db_name, $this->conn) or die(mysql_error());
-			}
+			$this->conn = mysql_connect($db_host, $db_username, $db_password) or die(mysql_error());
+			mysql_select_db($db_name, $this->conn) or die(mysql_error());
 		}
 	}
 	
@@ -63,7 +90,12 @@ class MemcachedAI {
 			return $this->memcached->addServer($host, $port, $weight);
 		}
 		else {
-			return $this->memcached->addServer($host, $port, true, $weight);
+			if (method_exists($this->memcached, 'addServer')) {
+				return $this->memcached->addServer($host, $port, true, $weight);
+			}
+			else {
+				return $this->memcached->connect($host, $port);
+			}
 		}
 	}
 	
@@ -129,6 +161,14 @@ class MemcachedAI {
 	}
 	
 	/*
+	 * Escapes special characters in a string for use in an SQL statement
+	 * @param $value the value
+	 */
+	private function databaseEscape($value) {
+		return mysql_real_escape_string($value, $this->conn);
+	}
+	
+	/*
 	 * Query a table for a specific record or records in a standardised way for memcached and expiring
 	 * @param $table the table to query for the data
 	 * @param $fields an array of key/value
@@ -140,7 +180,7 @@ class MemcachedAI {
 		// Create select query
 		$sql = "SELECT * FROM " . $table . " WHERE";
 		foreach ($fields as $key => $value) {
-			$sql .= " " . $key . " = '" . addslashes($value) . "' AND";
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "' AND";
 		}
 		
 		$sql = substr($sql, 0, -4);
@@ -202,7 +242,7 @@ class MemcachedAI {
 		// Create select query to retrieve current data
 		$sql = "SELECT * FROM " . $table . " WHERE";
 		foreach ($where as $key => $value) {
-			$sql .= " " . $key . " = '" . addslashes($value) . "' AND";
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "' AND";
 		}
 		
 		$sql = substr($sql, 0, -4);
@@ -239,12 +279,12 @@ class MemcachedAI {
 		// Create update query
 		$sql = "UPDATE " . $table . " SET";
 		foreach ($fields as $key => $value) {
-			$sql .= " " . $key . " = '" . addslashes($value) . "',";
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "',";
 		}
 		$sql = substr($sql, 0, -1);
 		$sql .= " WHERE";
 		foreach ($where as $key => $value) {
-			$sql .= " " . $key . " = '" . addslashes($value) . "' AND";
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "' AND";
 		}
 		$sql = substr($sql, 0, -4);
 		
@@ -292,7 +332,7 @@ class MemcachedAI {
 		$sql .= ") VALUES (";
 		
 		foreach ($field_values as $value) {
-			$sql .= "'" . addslashes($value) . "',";
+			$sql .= "'" . $this->databaseEscape($value) . "',";
 		}
 		$sql = substr($sql, 0, -1);
 		$sql .= ")";
@@ -323,7 +363,7 @@ class MemcachedAI {
 		if (!$insert) {
 			$sql = "SELECT * FROM " . $table . " WHERE";
 			foreach ($keys as $key) {
-				$sql .= " " . $key . " = '" . addslashes($fields[$key]) . "' AND";
+				$sql .= " " . $key . " = '" . $this->databaseEscape($fields[$key]) . "' AND";
 			}
 			
 			$sql = substr($sql, 0, -4);
@@ -343,6 +383,46 @@ class MemcachedAI {
 		else {
 			return $this->insertTable($table, $fields);
 		}
+	}
+	
+	/*
+	 * Delete a record from a table in a standardised way for memcached and expiring
+	 * @param $table the table to query for the data
+	 * @param $fields an array of key/value
+	 */
+	public function deleteTable($table, $fields) {
+		
+		// Create select query to retrieve current data
+		$sql = "SELECT * FROM " . $table . " WHERE";
+		foreach ($fields as $key => $value) {
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "' AND";
+		}
+		
+		$sql = substr($sql, 0, -4);
+		$results = $this->databaseQuery($sql);
+
+		// Expire field indexes
+		foreach ($results as $row) {
+			foreach ($row as $key => $value) {
+				$memcacheKey = $table . "_" . $key . "_" . $value;
+				$memcacheKey = "index_" . md5($memcacheKey);
+				
+				if ($index = $this->memcachedGet($memcacheKey)) {
+					foreach ($index as $memcacheID) {
+						$this->memcachedDelete($memcacheID);
+					}
+				}
+			}
+		}
+		
+		// Create delete query
+		$sql = "DELETE FROM " . $table . " WHERE";
+		foreach ($fields as $key => $value) {
+			$sql .= " " . $key . " = '" . $this->databaseEscape($value) . "' AND";
+		}
+		$sql = substr($sql, 0, -4);
+		
+		return $this->databaseWrite($sql);
 	}
 	
 	/*
